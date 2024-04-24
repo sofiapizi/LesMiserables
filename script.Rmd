@@ -1,0 +1,592 @@
+---
+title: "Les Miserables Project"
+author: "Giacomo Victor Massari (5112625) Maria Sofia Pizi (5108658)"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Libraries
+```{r}
+library(readr)
+library(igraph)
+library(tidyverse)
+library(visNetwork)
+```
+
+# Data
+The data is about characters in Victor Hugo's book Les Miserables and it is taken from GitHub ([https://github.com/MADStudioNU/lesmiserables-character-network/tree/master](URL)). 
+The data is composed by two files which we will name "nodes" and "edges"
+```{r upload, message=FALSE}
+nodes <- read_csv("jean-complete-node.csv")
+head(nodes)
+edges <- read_csv("jean-complete-edge.csv")
+head(edges)
+```
+The first table shows the structure of the dataset **nodes**, which contains the specification of each character in the book, which then corresponds to a node.
+The dataframe is composed as follows:
+- `Id`: the unique abbreviation of the character's name
+- `Label`: the complete name of the character
+- `Description`: a brief description of the character in the book
+
+The second table shows the structure of the dataset **edges**, the core of our analysis, in which are indicated and encoded all the interactions between the characters in the book.
+The structure of the dataframe is the following:
+- `Source`: the node (character, defined by the *Id*) from which the interaction starts
+- `Target`: the node (character) from which the interaction ends
+- `Type`: here is specified the kind of interaction, in our case are all **undirected**
+- `Id`: a numerical sequential encoding to keep track of all the interactions
+- `Label`: the corresponding *chapter.paragraph.subparagraph* in which the interaction takes place
+
+For the sake of simplicity, we will rename the columns "Source" and "Target" of the dataset into "from" and "to" respectively in the dataset **Edges** and in lowercase the columns in the dataset **nodes**.
+```{r}
+nodes <- nodes %>%
+  rename("id" = "Id",
+         "label" = "Label")
+
+edges <- edges %>% 
+        rename("from" = "Source",
+               "to" = "Target")
+```
+
+## Check NAs
+Before starting the analysis we need to check for Nas and in case remove them. 
+```{r check for NA}
+table(is.na(edges))
+
+which(is.na(edges))
+edges[1097,]
+
+edges <- na.omit(edges)
+table(is.na(edges))
+```
+
+## Check for duplicate interactions in the dataset
+
+We now check if there are duplicate interactions between characters.
+To do so we create a new dataframe taking into consideration the already existing dataframe **edges** and *group by* the columns "from" and "to"; we then count the number of occurrences of these interactions.
+```{r message=FALSE, warning=FALSE}
+multiple_edges <- edges %>%
+  group_by(from, to) %>%
+  summarize(n = n()) %>%
+  group_by(from, to) %>%
+  filter(n > 1)
+
+head(multiple_edges)
+```
+## Merge with edges
+We now merge the dataframes "edges" and "multiple_edges" in order to include the count of interactions between characters, making sure to take the distinct count of each interaction. 
+```{r}
+merged_edges <- edges %>%
+  left_join(multiple_edges, by = c("from", "to")) %>%
+  mutate(n = ifelse(is.na(n), 1, n)) %>%
+  distinct(from, to, .keep_all = TRUE)
+
+head(merged_edges)
+```
+The above dataframe is the one we'll use for our *analysis*. 
+
+# Graph Transformation
+For visualization purposes we'll transform into graph both the **edges** dataframe (which contains duplicate interactions).
+Then, we'll transform into a weighted graph the **merged_edges** dataframe. The *weights* of each edge will be based on the number of interactions between the characters, represented in the dataframe by `n`. 
+```{r}
+# graph with duplicate interactions
+g <- graph_from_data_frame(edges, directed = FALSE)
+
+# graph without duplicate interactions, but weighted 
+g_w <- graph_from_data_frame(merged_edges, directed=FALSE)
+# Set the weights of the edges based on the 'n' column
+E(g_w)$weight <- merged_edges$n
+```
+
+```{r}
+hist(E(g_w)$weight, breaks = 25,
+     xlab= "Weights", main="Edges' Weight Distribution", col = 'blue', border = 'white')
+```
+```{r}
+table(E(g_w)$weight)
+```
+
+## Plots of graphs
+The following is the plot of the **multiedged** and **not-weighted** graph:
+```{r, cache=TRUE}
+vis_g <- toVisNetworkData(g)
+
+visNetwork(
+  nodes = vis_g$nodes,
+  edges = vis_g$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+The following is the **simplified**, but **weighted** graph:
+```{r, cache=TRUE}
+vis_g_w <- toVisNetworkData(g_w)
+
+visNetwork(
+  nodes = vis_g_w$nodes,
+  edges = vis_g_w$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+# Analysis 
+
+We now proceed with our analysis looking at *Degree Distribution*, *Betweenness*, *Strength* and *Transitivity*. 
+## Degree
+```{r}
+table(degree(g_w))
+hist(degree(g_w), breaks = 50, ylim = c(0,110), 
+     xlab= "Degree",main = "Histogram of degree")
+```
+The code `degree(g_w)` calculates the degree of each *vertex* in the graph, more in details the degree of a vertex in a graph represents the number of edges connected to that vertex.
+From the above chunk we see that the highest degree is **87**, while most of the other edges range from degree **1** to **7**. 
+
+## Transitivity 
+```{r}
+t <- transitivity(g_w)
+t
+```
+In general, *transitivity* refers to the measure of the likelihood that two vertices connected to a common neighbor are also connected to each other. It is calculated as the ratio of the number of triangles in a graph to the number of "open triads", where a triad is a set of three vertices, and an open triad is a triad where at least one edge is missing.
+In this case, we have a transitivity value of **0.2894354** suggests a moderate level of *clustering* in the graph.
+
+## Strength
+```{r}
+s <- graph.strength(g_w)
+hist(s, breaks = 30, ylim = c(0,130), main= "Histogram of Strength",
+     xlab= "Strength")
+table(s)
+```
+The code `graph.strength(g_w)` calculates the **strength** of each vertex in the graph, more in details the strength of a vertex in a graph is a measure of the sum of weights of the edges connected to that vertex. Hence, this measure is particularly useful when working with weighted graphs, which is the case of our graph where, as a remark, the weights of the edges are given by the count of the interactions between characters in the whole book. 
+
+## Betweenness
+```{r}
+b <- betweenness(g_w)
+hist(b, breaks = 40, main= "Histogram of Betweenness", xlim=c(0, 10000),
+     xlab= "Betweenness", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+```
+The code `betweenness(g_w)` calculates the **betweenness centrality** of each vertex in the graph, more in details betweenness centrality is a measure of how *central* or *influential* a vertex is in a graph based on the concept of shortest paths. In general, vertices with higher betweenness are considered more central in the network as they tend to lie on a higher number of shortest paths between other pairs of vertices.
+
+## Betweenness and Strength
+```{r}
+plot(s, b, ylab="Betweenness", xlab= "Strength", main= "Betweenness vs Strength", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+```
+The above scatter plot shows the relationship between the vertex strength and their betweenness entrality in the graph. Each point on the plot represents a vertex, and its position corresponds to the strength and betweenness centrality values of that vertex.
+In general, vertices with higher strength values tend to have higher or lower betweenness centrality, indicating whether more influential vertices also tend to have stronger connections in the graph. 
+In this case, we see that there is a particular observation having high strength and high betweenness, suggesting that that particular point might be an *important character*. 
+Hence, we now investigate on who are the important actors in our network. 
+
+## Important actor
+```{r}
+ia <- order(b, decreasing=T)[1]
+name <- names(which.max(b))
+name_out <- nodes[nodes$id == name, ][2, 2]
+namename <- name_out$label
+cat('The most important actor in the network is',toupper(namename),'\n')
+```
+
+## Degree distribution
+We now look at the degree distribution:
+```{r}
+degree_dist <- function(graph) {
+  fd <- table(degree(graph))
+  d <- as.numeric(names(fd)) + 1 
+  list(d = d, fd = fd)
+}
+dd <- degree_dist(g_w)
+
+with(dd, plot(log(d), log(fd), main="Degree Distribution", xlab="Degree", ylab="Frequency of each Degree", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues')))
+```
+The `degree_dist()` function calculates the degree distribution of the graph, which means it computes the frequency distribution of the degrees (number of edges incident to each vertex) in the graph and it then returns a list with two elements: the degree values and their corresponding frequency counts.
+We then plot and visualize the degree distribution in logarithmic scales, more specifically to check if the degree distribution follows a *power-law pattern*.
+
+We then plot and visualize the degree distribution in logarithmic scales, more specifically to check if we have to deal with an **Heterogenous** or **Homogenous** degree distribution.
+From the scatterplot we can state that our network followws an Heterogenous Degree Distribution, recalling it refers to a situation where the degrees of nodes (or vertices) in the network are not evenly distributed. It means that some nodes have a significantly higher number of connections (high degree), while others have relatively fewer connections (low degree), as proved by the degree table in the first part of the analysis.
+This characteristic implies that we must look for a power-law distribution, which models this kind of behaviors.
+
+# Models
+Now we are going to start the modelling of the network, to do so we will use three main models: Linear Model, Generalised Linear Model (Poisson), Exponential Random Graph Model (ERGM).
+
+## Linear Model
+```{r}
+mod0 <- lm(log(fd) ~ log(d), data=dd)
+cat('model with the fd transformed:', '\n')
+summary(mod0)
+```
+From the above result of the **linear model** we have that the estimated intercept value is 4.0667, which represents the expected log-transformed frequency when the log-transformed degree is zero. The estimated coefficient for the log-degree is -1.1670, which indicates the expected change in the log-transformed frequency for a one-unit increase in the log-transformed degree.
+Moreover, we see a *Multiple R-squared* 0.7249, indicating that **72.49%** of the variance in the response variable can be explained by the model and, looking at the overall significance of the model, the extremely low *p-value* (6.824e-08) suggests strong evidence against the null hypothesis, indicating that the relationship is significant.
+
+## Generalized Linear Model
+```{r}
+mod1 <- glm(fd ~ log(d), family = poisson, data=dd)
+cat('model without the fd transformed:', '\n')
+summary(mod1)
+```
+The above model analyses the relationship between the frequency of degrees and the log-degrees in the network.
+From the results we see that the estimated intercept is 5.2376, and the estimated coefficient for log(d) is -1.6570. This last value represents the average effect on the log of the expected frequency for a one-unit change in the logarithm of degrees. Moreover both coefficients have extremely small *p-values* (<2e-16), indicating a highly significant relationship between the predictor variable and the response variable.
+Added to that, the deviance values indicate that the model explains a substantial portion of the variation in the data and the relatively low *AIC* value suggests a good balance between model complexity and fit to the data.
+
+### Plot
+```{r}
+with(dd, plot(log(d),log(fd),main="Degree Distribution", xlab="Degree", ylab="Frequency of each Degree", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues')))
+abline(a=mod0$coef[1],b=mod0$coef[2], col='red', lwd=3)
+abline(a=mod1$coef[1],b=mod1$coef[2], col='blue', lwd=3)
+legend("topright", legend = c("Linear Model", "Poisson"), col = c("red", "blue"), lwd = 2)
+
+# aggiungere legend
+```
+*FINISCI*
+From the above plot, the model which fits the best is the GLM. 
+
+## ERGM model
+```{r message=FALSE, warning=FALSE}
+library(ergm)
+am <- get.adjacency(g_w, sparse = FALSE)
+g_ergm <-as.network(am, directed = FALSE)
+ergm(g_ergm~edges) %>% summary
+```
+In general, the *Exponential Random Graph Model* is a statistical model used to analyze and understand the patterns and processes in network data and it estimates the effect of the edges predictor on the network structure. 
+In this case, the estimated coefficient for the edges predictor is -3.46612. This negative coefficient suggests that the presence of edges in the network is associated with a decrease in the network structure according to the mode hence, the presence of edges has a negative effect on the network. Moreover, the model suggests that the network tends to have fewer edges than would be expected by chance.
+
+# Clustering
+We now perform some **Clustering Analysis** using different methods such as *fast greedy algorithm*, *edge betweenness clustering algorithm*, and *Louvain community detection algorithm*. Furthermore, we'll also look at the modularity scores which quantifies the quality of the community structure within the network.
+
+## Cluster Fast Greedy Algorithm
+
+```{r}
+g_kc <- graph_from_data_frame(merged_edges, directed=FALSE)
+kc <- cluster_fast_greedy(g_kc)
+```
+
+In general, `cluster_fast_greedy()` function partitions the graph into communities based on the *connectivity patterns* between vertices and it aims to find a division of the graph that maximizes the modularity score. The resulting communities represent groups of vertices that are more densely connected within their own group compared to connections between different groups.
+
+```{r}
+l_kc <- length(kc)
+cat('The number of clusters by the Fast Greedy Algorithm are:',l_kc,'\n')
+mod_kc <- modularity(kc)
+cat('The Modularity Coefficient is:',mod_kc,'\n')
+```
+```{r}
+table(membership(kc))
+```
+
+We now plot the  clustering method based on the Fast Greedy Algorithm:
+```{r}
+set.seed(123456)
+
+V(g_kc)$community <- kc$membership
+
+colors <- adjustcolor(col = c("red", "orange", "yellow", "green", "blue", "#4b0082", "violet"), alpha=1)
+
+plot(kc, g_kc, vertex.size=5, , vertex.color=colors[V(g_kc)$community], vertex.label=NA, asp=.5, main="Fast Greedy Clustering")
+```
+
+```{r}
+# dendrogram based on kc
+## add a LEGEND
+dend_col <- c("red", "orange", "yellow", "green", "blue", "#4b0082", "violet")
+par(cex=.4)
+plot_dendrogram(kc, mode = 'hclust', colbar=dend_col, axes=FALSE)
+legend("topright", legend=c(1:length(kc)), col=dend_col, lwd=2)
+```
+
+## Cluster by Edge Betweenness
+```{r}
+g_ceb <- graph_from_data_frame(merged_edges, directed=FALSE)
+ceb <- cluster_edge_betweenness(g_ceb) 
+```
+
+In general, the *edge betweenness algorithm* works by iteratively removing edges with the highest betweenness centrality and as edges are removed, the graph is divided into communities based on the remaining connected components. This process continues until all edges are removed, resulting in a hierarchical structure of communities.
+
+```{r}
+l_ceb <- length(ceb)
+cat('The number of clusters by Edge Betweenness Algorithm are:',l_ceb,'\n')
+mod_ceb <- modularity(ceb)
+cat('The Modularity Coefficient is:',mod_ceb,'\n')
+```
+
+```{r}
+table(membership(ceb))
+```
+We now plot the clustering method based on edge betweenness algorithm:
+```{r}
+# Plotting the histogram
+hist(membership(ceb), breaks = 30, xlim=c(0,50), xlab= "Clusters", main= "Cluster Memebership distribution", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+```
+
+```{r}
+set.seed(123456)
+
+V(g_ceb)$community <- ceb$membership
+
+plot(ceb, g_ceb, vertex.size=5, vertex.label=NA, asp=.5, main="Edge Bewteennes Clustering")
+```
+
+```{r}
+dendPlot(ceb, cex= .4)
+```
+
+## Louvain Algorithm
+
+```{r, warning=FALSE}
+# Louvain Comunity Detection
+g_hc <- graph_from_data_frame(merged_edges, directed=FALSE)
+cluster <- cluster_louvain(g_hc)
+
+cluster_df <- data.frame(as.list(membership(cluster)))
+cluster_df <- as.data.frame(t(cluster_df))
+cluster_df$id <- rownames(cluster_df)
+
+# Create group column
+nodes <- left_join(nodes, cluster_df, by = "id")
+colnames(nodes)[4] <- "group"
+```
+
+In general, the *Louvain Algorithm* is a widely used and efficient method for community detection in networks. It optimizes the modularity of the network by iteratively moving vertices between communities to increase the modularity score. The algorithm starts with each vertex in its own community and iteratively merges communities to maximize modularity.
+
+```{r}
+l_hc <- length(cluster)
+cat('The number of clusters by Louvain Algorithm are:',l_hc,'\n')
+mod_hc <- modularity(cluster)
+cat('The modularity Coefficient is:',mod_hc,'\n')
+```
+
+We now plot the clustering method based on the Louvain algorithm:
+```{r}
+set.seed(123456)
+
+plot(cluster, g_hc, vertex.size=5, vertex.label=NA, asp=.5, main="Louvain Clustering")
+```
+```{r}
+table(membership(cluster))
+```
+
+### Plot
+```{r message=FALSE, warning=FALSE}
+visNetwork(nodes, merged_edges, width = "100%") %>%
+  visIgraphLayout() %>%
+  visNodes(
+    shape = "dot",
+    color = list(
+      background = "#0085AF",
+      border = "#013848",
+      highlight = "#FF8000"
+    ),
+    shadow = list(enabled = TRUE, size = 10)
+  ) %>%
+  visEdges(
+    shadow = FALSE,
+    color = list(color = "#0085AF", highlight = "#C62F4B")
+  ) %>%
+  visOptions(highlightNearest = list(enabled = T, degree = 1, hover = T),
+             selectedBy = "group") %>% 
+  visLayout(randomSeed = 11)
+```
+
+## Modularity Scores table
+```{r}
+mod_tab <- cbind(mod_kc, mod_ceb, mod_hc)
+mod_tab
+```
+
+Recall that a higher modularity score generally indicates a better division of the network into communities or clusters. Therefore, looking at the table above, we can say that `mod_hc`, which corresponds to the *Louvain Clustering Method* has the highest modularity score, suggesting that it provides a better clustering of the network compared to `mod_kc` and `mod_ceb`.
+
+# Subgraphing
+
+After the analysis of the Network we decided to subgraph the network in 5 subgraphs based on the chapter divisions (`Label` in *edges* dataframe), in order to have a more deep understanding of the network's actors within each chapter.
+
+## Grouping by Chapters
+```{r}
+grouped_chap <- edges %>%
+  mutate(Label = str_extract(Label, "^\\d+"))
+```
+
+```{r}
+subgroups <- grouped_chap %>% 
+  group_split(Label)
+```
+
+```{r, warning=FALSE, message=FALSE}
+chp <- vector(mode = "list", length = 5)
+
+for (i in 1:length(subgroups)) {
+  multiple_edges <- subgroups[[i]] %>%
+    group_by(from, to) %>%
+    summarize(n = n())
+  
+  chp[[i]] <- data.frame()
+  
+  chp[[i]] <- subgroups[[i]] %>%
+    left_join(multiple_edges, by = c("from", "to")) %>%
+    mutate(n = ifelse(is.na(n), 1, n)) %>%
+    distinct(from, to, .keep_all=TRUE)
+}
+```
+
+```{r}
+g_chp <- vector(mode = "list", length = 5)
+
+for (k in 1:length(chp)) {
+  g_chp[[k]] <- graph_from_data_frame(chp[[k]], directed=FALSE)
+  cat("Is the graph associated to chapter", k,"simple: ",is.simple(g_chp[[k]]), "\n")
+}
+```
+## Plots of subgraphs
+
+### Chapter 1
+```{r}
+vis_g_c1 <- toVisNetworkData(g_chp[[1]])
+
+visNetwork(
+  nodes = vis_g_c1$nodes,
+  edges = vis_g_c1$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+### Chapter 2
+```{r}
+vis_g_c2 <- toVisNetworkData(g_chp[[2]])
+
+visNetwork(
+  nodes = vis_g_c2$nodes,
+  edges = vis_g_c2$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+### Chapter 3
+```{r}
+vis_g_c3 <- toVisNetworkData(g_chp[[3]])
+
+visNetwork(
+  nodes = vis_g_c3$nodes,
+  edges = vis_g_c3$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+### Chapter 4
+```{r}
+vis_g_c4 <- toVisNetworkData(g_chp[[4]])
+
+visNetwork(
+  nodes = vis_g_c4$nodes,
+  edges = vis_g_c4$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+### Chapter 5
+```{r}
+vis_g_c5 <- toVisNetworkData(g_chp[[5]])
+
+visNetwork(
+  nodes = vis_g_c5$nodes,
+  edges = vis_g_c5$edges,
+  width = "100%",
+  height = '600px'
+)
+```
+
+## Analysis on the Subgraphs
+
+### Transitivity subgraphs
+```{r}
+t_c1 <- transitivity(g_chp[[1]])
+t_c2 <- transitivity(g_chp[[2]])
+t_c3 <- transitivity(g_chp[[3]])
+t_c4 <- transitivity(g_chp[[4]])
+t_c5 <- transitivity(g_chp[[5]])
+
+trans_tab <- cbind(t_c1, t_c2, t_c3,t_c4,t_c5)
+trans_tab
+```
+
+### Degree subgraphs
+```{r}
+par(mfrow = c(2, 3))
+d_c1 <- degree(g_chp[[1]])
+d_c2 <- degree(g_chp[[2]])
+d_c3 <- degree(g_chp[[3]])
+d_c4 <- degree(g_chp[[4]])
+d_c5 <- degree(g_chp[[5]])
+hist(d_c1, breaks=15, xlab="Degree", main="Degree of Chapter1", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(d_c2, breaks=15, xlab="Degree", main="Degree of Chapter2", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(d_c3, breaks=15, xlab="Degree", main="Degree of Chapter3", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(d_c4, breaks=15, xlab="Degree", main="Degree of Chapter4", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(d_c5, breaks=15, xlab="Degree", main="Degree of Chapter5", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(degree(g_w), xlab="Degree", main="Degree of Full Book", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+```
+### Strength subgraphs
+```{r}
+par(mfrow = c(2, 3))
+s_c1 <- graph.strength(g_chp[[1]])
+s_c2 <- graph.strength(g_chp[[2]])
+s_c3 <- graph.strength(g_chp[[3]])
+s_c4 <- graph.strength(g_chp[[4]])
+s_c5 <- graph.strength(g_chp[[5]])
+hist(s_c1, main="Strength of chapter1", xlab="strength", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(s_c2, main="Strength of chapter2", xlab="strength", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(s_c3, main="Strength of chapter3", xlab="strength", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(s_c4, main="Strength of chapter4", xlab="strength", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(s_c5, main="Strength of chapter5", xlab="strength", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(s, main="Strength of Full Book", xlab="strength", col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+```
+### Betweenness subgraphs
+```{r}
+par(mfrow = c(2, 3))
+b_c1 <- betweenness(g_chp[[1]])
+b_c2 <- betweenness(g_chp[[2]])
+b_c3 <- betweenness(g_chp[[3]])
+b_c4 <- betweenness(g_chp[[4]])
+b_c5 <- betweenness(g_chp[[5]])
+hist(b_c1, main="Betweenness of Chapter1", xlab="Betweenness", breaks=20, col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(b_c2, main="Betweenness of Chapter2", xlab="Betweenness", breaks=20, col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(b_c3, main="Betweenness of Chapter3", xlab="Betweenness", breaks=10, col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(b_c4, main="Betweenness of Chapter4", xlab="Betweenness", breaks=10, col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(b_c5, main="Betweenness of Chapter5", xlab="Betweenness", breaks=10, col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+hist(b, main="Betweenness of Full Book", xlab="Betweenness", breaks=30, col=hcl.colors(length(b), rev = F, palette= 'blues'), border="black")
+```
+
+### Plot Betweenness vs Strength subgraphs
+```{r}
+par(mfrow = c(2, 3))
+plot(s_c1, b_c1, ylab="Betweenness", xlab= "Strength", main="Bet vs Stre in Chapter1", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+plot(s_c2, b_c2, ylab="Betweenness", xlab= "Strength", main="Bet vs Stre in Chapter2", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+plot(s_c3, b_c3, ylab="Betweenness", xlab= "Strength", main="Bet vs Stre in Chapter3", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+plot(s_c4, b_c4, ylab="Betweenness", xlab= "Strength", main="Bet vs Stre in Chapter4", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+plot(s_c5, b_c5, ylab="Betweenness", xlab= "Strength", main="Bet vs Stre in Chapter5", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+plot(s,b, ylab="Betweenness", xlab= "Strength", main="Bet vs Stre in Full Book", pch=16, col=hcl.colors(length(b), rev = F, palette= 'blues'))
+```
+
+## Important Actors
+
+```{r, warning=FALSE}
+b_c <- list(b_c1, b_c2, b_c3, b_c4, b_c5)
+
+for (i in 1:length(g_chp)){
+  ia <- order(b_c[[i]], decreasing=T)[1:2]
+  name <- names(b_c[[i]][ia])
+  name_out <- nodes[nodes$id == name, ]
+  name_out_1 <- nodes[nodes$id == name[1], ]; name_out_1 <- na.omit(name_out_1)
+  name_out_2 <- nodes[nodes$id == name[2], ]; name_out_2 <- na.omit(name_out_2)
+  namename_1 <- name_out_1$label
+  namename_2 <- name_out_2$label
+  
+  cat('The important actors in chaptet', i,'are:',toupper(namename_1), 'and', toupper(namename_2),'\n')
+}
+```
+
+# Conclusions
+In conclusions the aim of the project was to analyze the dataset "Les Miserables", based on Victor Hugo's masterpiece, but from the perspective of a Network representation.
+In doing this Network Analysis we looked at descriptive characteristics such as *Degree*, *Strength*, *betwenness* and *Transitivity*. Moreover, we then looked for the "Important Actor" in the Network, discovering as may expected, it matched with the Main Character of the book (JEAN VALJEAN).
+After that we examined the Degree Distribution Analysis of the Network looking for the Model which better explained the structure of it.
+We then performed Clustering Analysis, computing different methods, in order to find out the best way to divide our network into Communities.
+Lastly, we decided to divide the Network not following clustering algorithms, but using instead the insights of the dataset, meaning the Chapter Label. From this last analysis, we found out how the different descriptive characteristics of the network changed between the different chapters and also how the characters are distributed in the book. 
+
+Link to our project repository: ([https://github.com/gvector/LesMiserables.git](URL))
